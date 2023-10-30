@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/csv"
 	"fmt"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
@@ -13,40 +14,87 @@ import (
 )
 
 var succIp = make(chan string)
+var succIpdata = make([][]string, 0)
 var errIp = make(chan string)
 var wg sync.WaitGroup
 var chanlNum = make(chan int, 20)
+var txt = `
+使用须知
+1.运行当前程序需要加 ip 参数，如： scan_ip.exe 127.0.0.*，此处的符合 * 就是需要查找的 ip 
+2.假设查找的 ip 端为多个，则参数为：scan_ip.exe 127.*.9.*，此时则会扫描 127.0.9.0->127.255.9.255期间的所有 ip
+3.如果需要将扫描的结果保存下来，则可以在后面加上 s 参数，如：scan_ip.exe 127.0.0.1 s，则会在当前目录生成一个扫描成功的 scan_succ_ip.csv 文件
+`
 
 func main() {
-	var iptmp = "*.0.1.1"
+	//var iptmp = "172.16.20.*"
+	//var iptmp = "172.*.20.*"
+	//var iptmp = "*.16.20.*"
+	parasm := os.Args[1:]
+
+	if len(parasm) == 0 {
+		fmt.Println("\n请运行 scan_ip.exe -h 查看说明\n")
+		return
+	}
+	if parasm[0] == "-h" {
+		fmt.Println(txt)
+		return
+	}
+	iptmp := parasm[0]
+	if strings.Count(iptmp, ".") != 3 {
+		fmt.Println(" \n ip 格式不对\n")
+		return
+	}
 	go printSucc()
 	go printErr()
+	println("starting scan ip")
 	for _, ipstr := range getCheckIpList(iptmp) {
-		println(ipstr)
-		//wg.Add(1)
-		//go addWork(ipstr, &wg)
+		wg.Add(1)
+		go addWork(ipstr, &wg)
 	}
 	wg.Wait()
+	if len(parasm) == 2 && parasm[1] == "s" {
+		saveCsv(succIpdata)
+	}
+}
+func saveCsv(data [][]string) {
 
+	file, err := os.Create("scan_succ_ip.csv") // 创建要写入的文件
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	for _, row := range data {
+		err := writer.Write(row)
+		if err != nil {
+			panic(err)
+		}
+	}
 }
 func printSucc() {
 	for {
 		select {
 		case v := <-succIp:
-			fmt.Printf("\n succ ip=%s", v)
+			t1 := time.Now().Format("2006-01-02 15:04:05")
+			succIpdata = append(succIpdata, []string{fmt.Sprintf("%s  %s", t1, v)})
+			fmt.Printf("\n%s ping ip=%s is ok", t1, v)
 		}
 	}
 }
 func printErr() {
 	for {
 		select {
-		case v := <-errIp:
-			fmt.Printf("\n err ip=%s", v)
-
+		case _ = <-errIp:
+			//fmt.Printf("\n err ip=%s", v)
 		}
 	}
 }
 func addWork(ipstr string, wg *sync.WaitGroup) {
+
+	chanlNum <- 1
 	defer func() {
 		wg.Done()
 		<-chanlNum
@@ -65,7 +113,7 @@ func addWork(ipstr string, wg *sync.WaitGroup) {
 		default:
 			err := pingIp(ipAddr)
 			if err != nil {
-				fmt.Printf("\nping IP err:%s", err.Error())
+				//fmt.Printf("\nping IP err:%s", err.Error())
 				return
 			}
 			find <- 1
@@ -87,12 +135,11 @@ func addWork(ipstr string, wg *sync.WaitGroup) {
 
 func getCheckIpList(ipTmp string) []string {
 	ips := make([]string, 0)
-	//if strings.Count(ipTmp, "*") == 0 {
-	//	ips = append(ips, ipTmp)
-	//} else {
-	generateIP(&ips, "", strings.Split(ipTmp, "."))
-	//}
-
+	if strings.Count(ipTmp, "*") == 0 {
+		ips = append(ips, ipTmp)
+	} else {
+		generateIP(&ips, "", strings.Split(ipTmp, "."))
+	}
 	return ips
 }
 
@@ -104,11 +151,19 @@ func generateIP(ips *[]string, currentIP string, parts []string) {
 	part := parts[0]
 	nextParts := parts[1:]
 	if part == "*" {
-		for i := 0; i <= 10; i++ {
-			generateIP(ips, currentIP+strconv.Itoa(i)+".", nextParts)
+		for i := 0; i <= 255; i++ {
+			cu := currentIP + strconv.Itoa(i) + "."
+			if strings.Count(cu, ".") == 4 {
+				cu = cu[0 : len(cu)-1]
+			}
+			generateIP(ips, cu, nextParts)
 		}
 	} else {
-		generateIP(ips, currentIP+part+".", nextParts)
+		cu := currentIP + part + "."
+		if strings.Count(cu, ".") == 4 {
+			cu = cu[0 : len(cu)-1]
+		}
+		generateIP(ips, cu, nextParts)
 	}
 }
 
